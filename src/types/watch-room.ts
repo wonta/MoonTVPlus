@@ -11,12 +11,12 @@ export interface Room {
   ownerName: string;
   ownerToken: string; // 房主令牌，用于重连时验证身份
   memberCount: number;
-  currentState: PlayState | LiveState | ScreenState | null;
+  currentState: PlayState | LiveState | ScreenState | MusicState | null;
   createdAt: number;
   lastOwnerHeartbeat: number;
 }
 
-export type RoomType = 'sync' | 'screen';
+export type RoomType = 'sync' | 'screen' | 'music';
 
 export interface Member {
   id: string;
@@ -51,6 +51,30 @@ export interface ScreenState {
   ownerName: string;
   hasAudio?: boolean;
   startedAt?: number;
+}
+
+export interface MusicQueueItem {
+  id: string;
+  name: string;
+  artist: string;
+  album?: string;
+  pic?: string;
+  platform: string;
+  songmid?: string;
+  duration?: number;
+  durationText?: string;
+}
+
+export interface MusicState {
+  type: 'music';
+  queue: MusicQueueItem[];
+  currentIndex: number;
+  song: MusicQueueItem;
+  currentTime: number;
+  isPlaying: boolean;
+  quality: string;
+  playMode: 'loop' | 'single' | 'random';
+  updatedAt: number;
 }
 
 export interface ChatMessage {
@@ -90,6 +114,12 @@ export interface ServerToClientEvents {
   'screen:offer': (data: { userId: string; offer: RTCSessionDescriptionInit }) => void;
   'screen:answer': (data: { userId: string; answer: RTCSessionDescriptionInit }) => void;
   'screen:ice': (data: { userId: string; candidate: RTCIceCandidateInit }) => void;
+  'music:change': (state: MusicState) => void;
+  'music:update': (state: MusicState) => void;
+  'music:play': (state: MusicState) => void;
+  'music:pause': (state: MusicState) => void;
+  'music:seek': (state: MusicState) => void;
+  'music:queue': (state: MusicState) => void;
   'chat:message': (message: ChatMessage) => void;
   'voice:offer': (data: { userId: string; offer: RTCSessionDescriptionInit }) => void;
   'voice:answer': (data: { userId: string; answer: RTCSessionDescriptionInit }) => void;
@@ -139,6 +169,12 @@ export interface ClientToServerEvents {
   'screen:offer': (data: { targetUserId: string; offer: RTCSessionDescriptionInit }) => void;
   'screen:answer': (data: { targetUserId: string; answer: RTCSessionDescriptionInit }) => void;
   'screen:ice': (data: { targetUserId: string; candidate: RTCIceCandidateInit }) => void;
+  'music:change': (state: MusicState) => void;
+  'music:update': (state: MusicState) => void;
+  'music:play': (state: MusicState) => void;
+  'music:pause': (state: MusicState) => void;
+  'music:seek': (state: MusicState) => void;
+  'music:queue': (state: MusicState) => void;
 
   'chat:message': (data: { content: string; type: 'text' | 'emoji' }) => void;
 

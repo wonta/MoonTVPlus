@@ -2,6 +2,7 @@
 'use client';
 
 import React, { createContext, useCallback,useContext, useEffect, useState } from 'react';
+import { usePathname } from 'next/navigation';
 
 import { useWatchRoom } from '@/hooks/useWatchRoom';
 
@@ -9,12 +10,14 @@ import Toast, { ToastProps } from '@/components/Toast';
 
 import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 
-import type { ChatMessage, Member, Room, RoomType, ScreenState, WatchRoomConfig } from '@/types/watch-room';
+import type { ChatMessage, Member, MusicState, Room, RoomType, ScreenState, WatchRoomConfig } from '@/types/watch-room';
 
 // Import type from watch-room-socket
 type WatchRoomSocket = import('@/lib/watch-room-socket').WatchRoomSocket;
 const WATCH_ROOM_NO_CONNECT_KEY = 'watch_room_no_connect';
 const WATCH_ROOM_SCREEN_PATH = '/watch-room/screen';
+const WATCH_ROOM_NO_CONNECT_TIMESTAMP_KEY = 'watch_room_no_connect_timestamp';
+const WATCH_ROOM_NO_CONNECT_TTL_MS = 10 * 60 * 1000;
 
 interface WatchRoomContextType {
   socket: WatchRoomSocket | null;
@@ -57,6 +60,12 @@ interface WatchRoomContextType {
   changeLiveChannel: (state: any) => void;
   startScreenShare: (state: ScreenState) => void;
   stopScreenShare: () => void;
+  changeMusic: (state: MusicState) => void;
+  updateMusicState: (state: MusicState) => void;
+  updateMusicQueue: (state: MusicState) => void;
+  playMusic: (state: MusicState) => void;
+  pauseMusic: (state: MusicState) => void;
+  seekMusic: (state: MusicState) => void;
   clearRoomState: () => void;
 
   // 重连
@@ -83,6 +92,7 @@ interface WatchRoomProviderProps {
 }
 
 export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
+  const pathname = usePathname();
   const [config, setConfig] = useState<WatchRoomConfig | null>(null);
   const [isEnabled, setIsEnabled] = useState(false);
   const [toast, setToast] = useState<ToastProps | null>(null);
@@ -129,11 +139,25 @@ export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    setShouldDisableWatchRoomConnection(
-      window.location.pathname !== WATCH_ROOM_SCREEN_PATH
-      && window.localStorage.getItem(WATCH_ROOM_NO_CONNECT_KEY) === '1'
-    );
-  }, []);
+    const refreshWatchRoomConnectionState = () => {
+      const noConnect = window.localStorage.getItem(WATCH_ROOM_NO_CONNECT_KEY) === '1';
+      const lastActiveAt = Number(window.localStorage.getItem(WATCH_ROOM_NO_CONNECT_TIMESTAMP_KEY) || 0);
+      const isScreenPage = pathname === WATCH_ROOM_SCREEN_PATH;
+      const isExpired = !lastActiveAt || Date.now() - lastActiveAt > WATCH_ROOM_NO_CONNECT_TTL_MS;
+
+      if (noConnect && isExpired) {
+        window.localStorage.removeItem(WATCH_ROOM_NO_CONNECT_KEY);
+        window.localStorage.removeItem(WATCH_ROOM_NO_CONNECT_TIMESTAMP_KEY);
+      }
+
+      setShouldDisableWatchRoomConnection(!isScreenPage && noConnect && !isExpired);
+    };
+
+    refreshWatchRoomConnectionState();
+    const interval = window.setInterval(refreshWatchRoomConnectionState, 30_000);
+
+    return () => window.clearInterval(interval);
+  }, [pathname]);
 
   // 检查登录状态
   useEffect(() => {
@@ -315,6 +339,12 @@ export function WatchRoomProvider({ children }: WatchRoomProviderProps) {
     changeLiveChannel: watchRoom.changeLiveChannel,
     startScreenShare: watchRoom.startScreenShare,
     stopScreenShare: watchRoom.stopScreenShare,
+    changeMusic: watchRoom.changeMusic,
+    updateMusicState: watchRoom.updateMusicState,
+    updateMusicQueue: watchRoom.updateMusicQueue,
+    playMusic: watchRoom.playMusic,
+    pauseMusic: watchRoom.pauseMusic,
+    seekMusic: watchRoom.seekMusic,
     clearRoomState: watchRoom.clearRoomState,
     manualReconnect,
   };

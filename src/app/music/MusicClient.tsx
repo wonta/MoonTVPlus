@@ -8,8 +8,10 @@ import AddToPlaylistModal from '@/components/AddToPlaylistModal';
 import Toast, { ToastProps } from '@/components/Toast';
 import LyricsPiPWindow from '@/components/LyricsPiPWindow';
 import MusicSidebarDrawer from '@/components/music/MusicSidebarDrawer';
+import { useWatchRoomContextSafe } from '@/components/WatchRoomProvider';
 import { getSourceDisplayLabel, normalizeSource, SourcePill } from '@/lib/music/shared';
 import type { MusicQuality, MusicSource, Song } from '@/lib/music/types';
+import type { MusicQueueItem, MusicState } from '@/types/watch-room';
 
 const SPECTRUM_BIN_COUNT = 96;
 const SPECTRUM_IDLE_LEVEL = 0.02;
@@ -213,6 +215,7 @@ declare global {
 export default function MusicClient({ children: _children }: { children?: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
+  const watchRoom = useWatchRoomContextSafe();
   const [currentSource, setCurrentSource] = useState<MusicSource>('wy');
   const [currentSong, setCurrentSong] = useState<Song | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -302,6 +305,67 @@ export default function MusicClient({ children: _children }: { children?: React.
   const qualitySwitchRequestRef = useRef(0);
   const currentSongRef = useRef<Song | null>(null);
   const currentSourceRef = useRef(currentSource);
+  const lastMusicQueueSignatureRef = useRef('');
+
+  const isMusicRoomOwner = Boolean(
+    watchRoom?.isOwner &&
+    watchRoom.currentRoom?.roomType === 'music'
+  );
+
+  const toMusicQueueItem = (song: Song): MusicQueueItem => ({
+    id: song.id,
+    name: song.name,
+    artist: song.artist,
+    album: song.album,
+    pic: song.pic,
+    platform: song.platform || currentSourceRef.current,
+    songmid: song.songmid,
+    duration: song.duration,
+    durationText: song.durationText,
+  });
+
+  const buildMusicRoomState = (
+    song: Song,
+    options: {
+      queue?: Song[];
+      currentIndex?: number;
+      currentTime?: number;
+      isPlaying?: boolean;
+    } = {}
+  ): MusicState => {
+    const songPlatform = song.platform || currentSourceRef.current;
+    let queue = options.queue && options.queue.length > 0 ? options.queue : playlist;
+    let currentIndex = options.currentIndex ?? queue.findIndex((item) => item.id === song.id && (item.platform || currentSourceRef.current) === songPlatform);
+
+    if (currentIndex < 0) {
+      queue = [...queue, { ...song, platform: songPlatform }];
+      currentIndex = queue.length - 1;
+    }
+
+    const currentQueueSong = { ...queue[currentIndex], platform: queue[currentIndex].platform || songPlatform };
+
+    return {
+      type: 'music',
+      queue: queue.map(toMusicQueueItem),
+      currentIndex,
+      song: toMusicQueueItem(currentQueueSong),
+      currentTime: options.currentTime ?? audioRef.current?.currentTime ?? currentTimeRef.current ?? 0,
+      isPlaying: options.isPlaying ?? isPlaying,
+      quality,
+      playMode,
+      updatedAt: Date.now(),
+    };
+  };
+
+  const emitMusicChange = (song: Song | null, nextQueue?: Song[], nextIndex?: number, playing = true) => {
+    if (!isMusicRoomOwner || !watchRoom || !song) return;
+    watchRoom.changeMusic(buildMusicRoomState(song, {
+      queue: nextQueue,
+      currentIndex: nextIndex,
+      currentTime: audioRef.current?.currentTime || 0,
+      isPlaying: playing,
+    }));
+  };
 
   const buildStreamUrl = (song: Song, source: MusicSource, songQuality: MusicQuality) => {
     const params = new URLSearchParams({
@@ -630,6 +694,35 @@ export default function MusicClient({ children: _children }: { children?: React.
     currentSourceRef.current = currentSource;
   }, [currentSource]);
 
+  useEffect(() => {
+    if (!isMusicRoomOwner || !watchRoom || !currentSong) return;
+
+    const state = buildMusicRoomState(currentSong);
+    const signature = JSON.stringify({
+      queue: state.queue.map((item) => `${item.platform}:${item.id}`),
+      currentIndex: state.currentIndex,
+      playMode: state.playMode,
+      quality: state.quality,
+    });
+
+    if (signature === lastMusicQueueSignatureRef.current) return;
+    lastMusicQueueSignatureRef.current = signature;
+    watchRoom.updateMusicQueue(state);
+  }, [isMusicRoomOwner, watchRoom, currentSong, playlist, playlistIndex, playMode, quality]);
+
+  useEffect(() => {
+    if (!isMusicRoomOwner || !watchRoom || !currentSong || !isPlaying) return;
+
+    const interval = window.setInterval(() => {
+      watchRoom.updateMusicState(buildMusicRoomState(currentSong, {
+        currentTime: audioRef.current?.currentTime || currentTimeRef.current || 0,
+        isPlaying: true,
+      }));
+    }, 5000);
+
+    return () => window.clearInterval(interval);
+  }, [isMusicRoomOwner, watchRoom, currentSong, isPlaying, playlist, playlistIndex, playMode, quality]);
+
   // 监听 playRecords 变化，更新 playlistIndex
   useEffect(() => {
     if (pendingSongToPlay) {
@@ -725,6 +818,10 @@ export default function MusicClient({ children: _children }: { children?: React.
           const platform = song.platform || currentSource;
           const proxyEnabled = getMusicProxyEnabled();
           setMusicProxyEnabled(proxyEnabled);
+          const syncSong = { ...song, platform };
+          const existingQueueIndex = playlist.findIndex(s => s.id === song.id && (s.platform || platform) === platform);
+          const syncQueue = existingQueueIndex >= 0 ? playlist : [...playlist, syncSong];
+          const syncIndex = existingQueueIndex >= 0 ? existingQueueIndex : syncQueue.length - 1;
 
       // 记录歌曲开始播放的时间
       songStartTimeRef.current = Date.now();
@@ -775,6 +872,7 @@ export default function MusicClient({ children: _children }: { children?: React.
       });
 
       saveHistoryRecordSafely(record, { ...song, platform }, 0, song.duration || 0);
+      emitMusicChange(syncSong, syncQueue, syncIndex, true);
 
       if (proxyEnabled) {
         const streamUrl = buildStreamUrl(song, platform, quality);
@@ -904,6 +1002,14 @@ export default function MusicClient({ children: _children }: { children?: React.
       if (isPlaying) {
         audioRef.current.pause();
         setIsPlaying(false);
+        if (isMusicRoomOwner) {
+          if (currentSong) {
+            watchRoom?.pauseMusic(buildMusicRoomState(currentSong, {
+              currentTime: audioRef.current.currentTime || currentTimeRef.current || 0,
+              isPlaying: false,
+            }));
+          }
+        }
         // 暂停时保存状态到 localStorage 和数据库
         savePlayState();
 
@@ -926,6 +1032,14 @@ export default function MusicClient({ children: _children }: { children?: React.
           setIsBuffering(false);
         });
         setIsPlaying(true);
+        if (isMusicRoomOwner) {
+          if (currentSong) {
+            watchRoom?.playMusic(buildMusicRoomState(currentSong, {
+              currentTime: audioRef.current.currentTime || currentTimeRef.current || 0,
+              isPlaying: true,
+            }));
+          }
+        }
       }
     }
   };
@@ -1337,6 +1451,15 @@ export default function MusicClient({ children: _children }: { children?: React.
     if (audioRef.current) {
       audioRef.current.currentTime = newTime;
     }
+    if (isMusicRoomOwner) {
+      const syncSong = currentSongRef.current || currentSong;
+      if (syncSong) {
+        watchRoom?.seekMusic(buildMusicRoomState(syncSong, {
+          currentTime: newTime,
+          isPlaying,
+        }));
+      }
+    }
   };
 
   const seekToLyric = (line: LyricLine, index: number) => {
@@ -1352,6 +1475,15 @@ export default function MusicClient({ children: _children }: { children?: React.
     audio.currentTime = nextTime;
     setCurrentTime(nextTime);
     setCurrentLyricIndex(index);
+    if (isMusicRoomOwner) {
+      const syncSong = currentSongRef.current || currentSong;
+      if (syncSong) {
+        watchRoom?.seekMusic(buildMusicRoomState(syncSong, {
+          currentTime: nextTime,
+          isPlaying,
+        }));
+      }
+    }
   };
 
   // 音量调节
